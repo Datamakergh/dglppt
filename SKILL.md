@@ -1,350 +1,223 @@
 ---
 name: dglppt
-description: Restyle any PowerPoint deck so it matches a "truth" .pptx pixel for pixel — layouts, margins, spacing, fonts, colors, headers, footers and logos — without touching the content. Use when the user starts a truth-file session, uploads a truth deck, or asks to make a deck match their truth/master/reference file.
+description: Restyle any PowerPoint deck to match a "truth" .pptx/.potx exactly — layouts, borders, spacing, fonts, colors, header, footer, slide numbers and logos — without changing any content, including GIFs, video, audio and animations. Also makes visuals that belong together (icon rows, repeated screenshots) the same size and alignment. Use when the user starts a truth-file session, uploads a truth/master/reference/brand deck or template, or asks to "apply our template", "rebrand this deck", "make it look like this deck" or "match the truth file".
 ---
 
 # dglppt — Truth File Restyle
 
-The user supplies a **truth file**: a finished, correctly designed .pptx. Every deck they send afterwards is a **target**. Each target is restyled to match the truth file exactly. Only design changes. The words, numbers, images, charts, tables, order and notes stay as they are.
+The user supplies a **truth file**: a finished, correctly designed .pptx (or a .potx template). Every deck they send afterwards is a **target**. Each target is restyled to match the truth file. Only design changes. The words, numbers, images, GIFs, videos, audio, charts, tables, animations, slide order and notes stay as they are.
+
+All the mechanical work is done by the scripts in `scripts/` (python-pptx, lxml, Pillow). In this file, `$S` means `<this skill's directory>/scripts`. Each script prints what it did and writes a `.meta.json` next to its output that the next script reads. Run them in the order below, or run `pipeline.py` for all of them at once.
 
 ## The two unbreakable rules
 
-1. **Content is locked.** Never edit, reword, delete, add, reorder or "fix" any content without the user's explicit permission in chat. Content means all text (including typos), numbers, table cells, chart data, images, slide order, speaker notes, hyperlinks and the number of slides. If restyling seems to need a content change (splitting a slide, dropping an old footer line, removing a duplicate logo), **stop and ask**. One approval covers one change only.
-2. **The truth file wins on every design decision.** Positions, sizes, margins, gaps, fonts, sizes, colors, line spacing, bullets, insets, fills, borders, shadows, header, footer and logo all come from the truth file. Nothing is left as a "close enough" guess. When the truth file doesn't define something the target needs, ask rather than invent.
+1. **Content is locked.** Never edit, reword, delete, add, reorder or "fix" any content without the user's explicit permission in chat. Content means:
+   - all text (including typos), numbers, table cells, chart data, speaker notes, hyperlinks, alt text, section names, hidden-slide flags and the number and order of slides;
+   - every image, **GIF (all its frames and timings), video and audio file**, its poster frame, trim, bookmarks and playback settings;
+   - **animations and transitions**, and the shapes they point at.
+
+   Media and animated content may change in **placement only**: position and size, with the aspect ratio kept. They also take the truth file's frame styling (border, shadow, corners) when the truth defines one. If restyling seems to need a content change (splitting a slide, dropping an old footer line, removing a duplicate logo), **stop and ask**. One approval covers one change only. Record every approval in `approved.json` (format below).
+2. **The truth file wins on every design decision.** Positions, sizes, margins, gaps, fonts, sizes, colors, line spacing, bullets, insets, fills, borders, header, footer, slide number and logo all come from the truth file. When the truth file doesn't define something the target needs (no table in the truth, for example), ask rather than invent.
 
 ## Session flow
 
 ```
-1. Get the truth file        → nothing else happens before this
-2. Extract the truth spec    → truth_spec.json + summary for the user
-3. Take in a target          → content fingerprint + slide-to-layout map
-4. Restyle the target        → in place, content untouched
-5. Verify                    → content check, geometry check, visual check
-6. Deliver                   → restyled deck + before/after + report
+0. Preflight                → tools and fonts available?
+1. Get the truth file       → nothing else happens before this
+2. Extract the truth spec   → truth_spec.json + summary for the user to confirm
+3. Take in a target         → fingerprint, layout map, leftovers, visual groups (one list of questions)
+4. Restyle                  → transplant → remap → strip → place → group → fit
+5. Verify                   → content, media, geometry, pixel and visual checks
+6. Deliver                  → restyled deck + before/after PDF + report
 ```
-Steps 3–6 repeat for every new target. The truth spec stays in force for the whole session until the user uploads a new truth file.
+Steps 3–6 repeat for every new target. The truth spec stays in force until the user uploads a new truth file.
+
+**Auto mode.** If the user says something like "just do it" or "no questions unless needed", run `pipeline.py` (Step 4 below) with the defaults. It still stops (exit code 2) for anything on the permission list. All other decisions go into the report.
 
 ---
+
+## Step 0 — Preflight
+
+`python $S/preflight.py [truth.pptx]` checks python-pptx/lxml/Pillow (required), LibreOffice + pdftoppm (renders), fc-match (font metrics) and the pptx skill's `validate.py`, and lists truth fonts that aren't installed.
+- **No LibreOffice:** skip renders and the pixel check, say so, and rely on the content, geometry and media checks.
+- **No pptx skill:** skip `validate.py`. Opening the output once in LibreOffice (render) is then the only file-integrity check. Say so.
+- **Truth font missing:** renders substitute it, so text fit in the preview is unreliable. Ask whether the user can provide the font files. The geometry checks are unaffected.
 
 ## Step 1 — Get the truth file
 
-When the skill starts, ask for the truth file first and wait for it:
+Ask for it first and wait:
 
-> "Please upload your truth file, the finished .pptx that every other deck should match. I'll read its design rules first and then restyle anything you send after it."
+> "Please upload your truth file, the finished .pptx (or .potx template) that every other deck should match. I'll read its design rules first and then restyle anything you send after it."
 
-- If the user sends a target before a truth file, don't restyle it. Ask for the truth file.
-- If more than one file arrives at once, ask which one is the truth file.
-- A `.potx` truth file is fine. A legacy `.ppt` must be converted to `.pptx` first (see the pptx skill).
+- If a target arrives first, don't restyle it. Ask for the truth file.
+- If several files arrive at once, ask which one is the truth file.
+- `.pptx`, `.potx` and `.ppsx` all work. Convert a legacy `.ppt` to `.pptx` first (pptx skill: `soffice.py --headless --convert-to pptx`).
+- **Reuse:** if a `truth_spec.json` from an earlier session exists and its `source.sha1` matches the uploaded truth file, offer to reuse it. Otherwise extract again.
 
 ## Step 2 — Extract the truth spec
 
-Work on a copy, never on the upload. Run the extractor below on the truth file to produce `truth_spec.json`. All measurements are in **EMU** (914,400 EMU = 1 inch, 12,700 EMU = 1 pt) so nothing is lost to rounding.
+Work on copies, never on uploads.
 
-The spec has to capture:
+```
+python $S/extract_truth.py truth.pptx truth_spec.json --summary truth_summary.md
+```
+The output records everything in EMU (914,400 per inch, 12,700 per pt):
+- **Canvas and theme:** slide size, the 12 theme colors, heading and body fonts, and the master text styles (title/body/other, per level).
+- **Layouts:** every layout, keyed `m<master>/<layout name>`, with its placeholders (type, idx, box) and the *resolved* text style of each placeholder per level (inheritance included).
+- **Borders and safe area:** taken from the layout placeholders first, so a `.potx` without slides works. When truth slides exist, they cross-check the values, which are clustered to 0.01 in. Also recorded: the content area and the vertical and horizontal gaps.
+- **Fixed elements:** master and layout art, the footer, slide-number and date placeholders, and anything repeated at the same spot on truth slides (logos, badges, header text, bars). Also which footer elements the truth slides actually *show* per layout, and their text.
+- **Element styles:** table style (id, flags, cell fills and margins, text size), chart style (palette order, font sizes, legend, gridlines), picture frame style, box style, and the free text-box roles (body text box, footnote).
 
-| Area | What is recorded |
-|---|---|
-| Canvas | Slide width and height |
-| Theme | All 12 theme colors, heading and body fonts, the raw theme XML |
-| Masters and layouts | Every layout's name, placeholders (type, idx, x, y, w, h), text styles per level, background, and raw XML |
-| Fixed elements | Header, footer, slide number, date, logo(s): exact position, size, image hash, crop, and whether they live on the master, layout or slide |
-| Borders / safe area | Left, right, top and bottom space left empty on each layout, plus the content safe area inside the header and footer zones |
-| Gaps | Spacing between title and body, between stacked blocks, between columns, as most-used values per layout |
-| Text styles | For each level and role: font, size, bold/italic, color, alignment, line spacing, space before/after, bullet character/color/size, indent, hanging indent, text box insets, autofit and wrap |
-| Shapes | Fill, outline width/color/dash, corner radius, shadow, effects (raw `spPr` XML) |
-| Tables | Table style, header row/banding, cell fill, borders, cell margins, font sizes |
-| Charts | Palette order, fonts and sizes of axis/data labels/legend, gridlines, label positions |
-| Images | Border, shadow, corner radius, crop style |
+**Check it visually.** Run `python $S/render.py truth.pptx renders/truth` and look at the slides next to the summary:
+- every logo, header and footer you can see appears under "Fixed elements";
+- the borders match the empty space you can see;
+- every text role (title, subtitle, body levels, captions, table text, chart labels, footer) has a style.
 
-### Extractor
+Fix the spec JSON by hand if something was missed, and note what you changed.
 
-```python
-# extract_truth.py  —  python extract_truth.py truth.pptx truth_spec.json
-import sys, json, hashlib
-from collections import Counter
-from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
-from pptx.enum.dml import MSO_COLOR_TYPE
-from lxml import etree
+**Confirm with the user.** Send the summary: slide size, fonts, main colors, layouts with borders in inches and cm, and where the header, footer, slide number and logo sit. Include anything under "Needs confirmation" (for example "the truth has no table: how should tables look?"). **Only the confirmed spec is used.** Then ask for the first target.
 
-A = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+---
 
-def xml(el):
-    return etree.tostring(el, encoding='unicode') if el is not None else None
+## Step 3 — Take in a target (ask everything in ONE message)
 
-def color_of(font):
-    try:
-        if font.color is None or font.color.type is None: return None
-        if font.color.type == MSO_COLOR_TYPE.RGB: return str(font.color.rgb)
-        if font.color.type == MSO_COLOR_TYPE.SCHEME: return str(font.color.theme_color)
-    except Exception: return None
+1. **Copy the upload** and work on the copy. Keep the original for the before/after.
+2. **Fingerprint the content:** `python $S/fingerprint.py target.pptx before_fingerprint.json`. It captures text in order (including fields and line breaks), links, alt text, tables, chart data, SmartArt text, image/GIF/video/audio hashes, GIF frames, media settings, animations, transitions, notes, sections and hidden slides.
+3. **Render the original:** `python $S/render.py target.pptx renders/before`.
+4. **Map slides to truth layouts:** `python $S/map_layouts.py truth_spec.json target.pptx layout_map.json`. Show the table and ask only about **low/none** rows. For a slide no layout fits, offer two choices: the nearest layout, or keep the slide's arrangement and apply only the truth margins, fonts, colors and fixed elements (map it to the truth "Title Only" or "Blank" layout).
+5. **Leftovers from the old design:** the target's own footer text, logo, page number or decorative bars. They will be replaced by the truth's fixed elements, but **removing them needs permission** whenever they hold text or an image ("Confidential" is content). List them by slide and shape id, ask once, and record the yes answers in `approved.json`.
+6. **Different slide size:** say so. The truth size is used, and content is scaled uniformly into the new canvas (never stretched). Ask first if the aspect ratio changes (4:3 → 16:9).
+7. **Visual groups** (visuals that should look identical). Run this after placement in Step 4, but ask about the groups here. Proposals come from identical images, perceptually similar images, rows or columns of similar visuals, and the same visual repeated across slides. Look at each group's contact sheet, drop wrong groups (an icon and a GIF that merely sit above each other), and **add** groups that depict the same idea without matching pixels (three different feature icons). Ask the user about medium-confidence groups.
+8. **Free text-box roles (optional):** text boxes get the truth "textbox" style by default. If one is really a title, caption or footnote, record that in `roles.json`: `{"<slide>": {"<shape id>": "caption"}}`.
 
-def text_spec(tf):
-    paras = []
-    for p in tf.paragraphs:
-        runs = [dict(font=r.font.name, size_emu=r.font.size, bold=r.font.bold,
-                     italic=r.font.italic, color=color_of(r.font)) for r in p.runs]
-        paras.append(dict(level=p.level, align=str(p.alignment),
-                          line_spacing=str(p.line_spacing), space_before=p.space_before,
-                          space_after=p.space_after, pPr=xml(p._p.find(A+'pPr')), runs=runs))
-    body = tf._txBody.find(A+'bodyPr')
-    return dict(insets=[tf.margin_left, tf.margin_top, tf.margin_right, tf.margin_bottom],
-                wrap=tf.word_wrap, autosize=str(tf.auto_size), bodyPr=xml(body),
-                lstStyle=xml(tf._txBody.find(A+'lstStyle')), paragraphs=paras)
-
-def shape_spec(sh):
-    d = dict(name=sh.name, kind=str(sh.shape_type), x=sh.left, y=sh.top, w=sh.width,
-             h=sh.height, rot=getattr(sh, 'rotation', 0),
-             spPr=xml(sh._element.find('.//{http://schemas.openxmlformats.org/presentationml/2006/main}spPr')))
-    if sh.is_placeholder:
-        d['ph_type'] = str(sh.placeholder_format.type); d['ph_idx'] = sh.placeholder_format.idx
-    if sh.shape_type == MSO_SHAPE_TYPE.PICTURE:
-        d['image_sha1'] = hashlib.sha1(sh.image.blob).hexdigest()
-        d['crop'] = [sh.crop_left, sh.crop_top, sh.crop_right, sh.crop_bottom]
-    if sh.has_text_frame: d['text'] = text_spec(sh.text_frame)
-    if getattr(sh, 'has_table', False) and sh.has_table:
-        d['table_xml'] = xml(sh._element.find('.//'+A+'tbl'))
-    if getattr(sh, 'has_chart', False) and sh.has_chart:
-        d['chart_xml'] = etree.tostring(sh.chart._chartSpace, encoding='unicode')
-    return d
-
-FIXED_PH = {PP_PLACEHOLDER.FOOTER, PP_PLACEHOLDER.SLIDE_NUMBER, PP_PLACEHOLDER.DATE}
-
-def main(src, out):
-    prs = Presentation(src)
-    W, H = prs.slide_width, prs.slide_height
-    spec = dict(canvas=dict(w=W, h=H), masters=[], slides=[])
-
-    for m in prs.slide_masters:
-        mspec = dict(name=m.name, shapes=[shape_spec(s) for s in m.shapes], layouts=[])
-        for lay in m.slide_layouts:
-            mspec['layouts'].append(dict(name=lay.name,
-                                         shapes=[shape_spec(s) for s in lay.shapes],
-                                         xml=xml(lay._element)))
-        spec['masters'].append(mspec)
-
-    pic_seen = Counter()
-    for i, s in enumerate(prs.slides, 1):
-        shapes = [shape_spec(sh) for sh in s.shapes]
-        spec['slides'].append(dict(n=i, layout=s.slide_layout.name, shapes=shapes))
-        for sh in shapes:
-            if 'image_sha1' in sh: pic_seen[(sh['image_sha1'], sh['x'], sh['y'], sh['w'], sh['h'])] += 1
-
-    # Fixed elements: header/footer/number/date placeholders, master/layout art,
-    # and any picture repeated at the same spot (logos). Single-slide truth files:
-    # pictures in the top or bottom 15% are treated as logos too.
-    n_slides = len(spec['slides'])
-    for sl in spec['slides']:
-        for sh in sl['shapes']:
-            in_band = sh['y'] < 0.15*H or sh['y'] + sh['h'] > 0.85*H
-            repeated = 'image_sha1' in sh and (pic_seen[(sh['image_sha1'], sh['x'], sh['y'], sh['w'], sh['h'])] > 1
-                                               or (n_slides == 1 and in_band))
-            sh['fixed'] = repeated or sh.get('ph_type') in {str(p) for p in FIXED_PH}
-
-    # Borders / safe area and gaps per layout, from content shapes only
-    # (not fixed, not full-bleed backgrounds).
-    per_layout = {}
-    for sl in spec['slides']:
-        content = [s for s in sl['shapes'] if not s['fixed']
-                   and not (s['w'] > 0.9*W and s['h'] > 0.9*H)]
-        if not content: continue
-        L = per_layout.setdefault(sl['layout'], dict(left=[], top=[], right=[], bottom=[], vgaps=[], hgaps=[]))
-        L['left'].append(min(s['x'] for s in content))
-        L['top'].append(min(s['y'] for s in content))
-        L['right'].append(W - max(s['x']+s['w'] for s in content))
-        L['bottom'].append(H - max(s['y']+s['h'] for s in content))
-        by_y = sorted(content, key=lambda s: s['y'])
-        for a, b in zip(by_y, by_y[1:]):
-            g = b['y'] - (a['y']+a['h'])
-            if g > 0: L['vgaps'].append(g)
-        by_x = sorted(content, key=lambda s: s['x'])
-        for a, b in zip(by_x, by_x[1:]):
-            g = b['x'] - (a['x']+a['w'])
-            if g > 0: L['hgaps'].append(g)
-    mode = lambda v: Counter(v).most_common(1)[0][0] if v else None
-    spec['borders'] = {k: dict(left=mode(v['left']), top=mode(v['top']), right=mode(v['right']),
-                               bottom=mode(v['bottom']), vgap=mode(v['vgaps']), hgap=mode(v['hgaps']))
-                       for k, v in per_layout.items()}
-
-    json.dump(spec, open(out, 'w'), indent=1, default=str)
-
-if __name__ == '__main__':
-    main(sys.argv[1], sys.argv[2])
+`approved.json`, which every script reads:
+```json
+{"remove": [{"slide": 2, "shape_id": 4, "why": "old footer 'Confidential' — user said yes"}],
+ "change": [{"slide": 5, "shape_id": 3, "field": "text", "why": "user asked to fix the typo"}],
+ "add": [], "media_scale": [{"slide": 4, "shape_id": 6, "why": "user allowed 80%"}]}
 ```
 
-Also keep the truth file's raw parts for exact copying later:
-`ppt/theme/`, `ppt/slideMasters/`, `ppt/slideLayouts/`, their `_rels/`, and `ppt/media/` items referenced by them.
+## Step 4 — Restyle (inside the target's own file)
 
-### Check the spec visually
+The restyle happens inside the target's package, so its slides, media, charts and notes never leave it. Every step edits shapes **in place**, so shape ids, and the animations that point at them, survive.
 
-Render the truth file to images (pptx skill → *Converting to Images*) and look at every slide next to `truth_spec.json`. Confirm that:
-- every logo, header and footer in the render was detected as `fixed`,
-- the border values match the empty space you can see,
-- every text role (title, subtitle, body levels 1–3, captions, table text, chart labels, footer) has a recorded style.
-
-If the extractor missed something, correct the spec by hand and note it.
-
-### Confirm with the user
-
-Send a short summary: slide size, fonts, main colors, the layouts found, the border/margin values in inches and cm, and where the header, footer and logo sit. Ask the user to confirm or correct it. **Only the confirmed spec is used.** Then ask for the first target.
-
----
-
-## Step 3 — Take in a target
-
-1. **Copy the upload.** Work on the copy only. Keep the untouched original for the before/after.
-2. **Fingerprint the content** with the script below and save it as `before_fingerprint.json`. This is what the final check compares against.
-3. **Render the original** to images (`before-*.jpg`).
-4. **Map every target slide to a truth layout.** Match by structure: title only, title + body, two columns, section divider, table, chart, image + text. Show the user a short table:
-
-   | Target slide | Looks like | Truth layout | Confidence |
-   |---|---|---|---|
-
-   Ask the user only about low-confidence or unmatched slides. If no truth layout fits a slide, ask: use the nearest layout, or keep the slide's arrangement and only apply truth margins, fonts, colors and fixed elements.
-5. **List leftovers from the old design.** These are things in the target that look like its own header, footer, logo, page number or decorative bars. They will be replaced by the truth file's fixed elements. **Removing the old ones needs permission** whenever they contain text (a footer saying "Confidential" is content). Ask once, as a list.
-6. **Different slide size.** If the target's slide size differs from the truth's, tell the user. The truth size is used, and content is scaled into the new canvas. Ask first if the aspect ratio differs (for example 4:3 to 16:9).
-
-### Content fingerprint
-
-```python
-# fingerprint.py  —  python fingerprint.py deck.pptx out.json
-import sys, json, hashlib
-from pptx import Presentation
-
-def shape_items(sh, out):
-    if sh.shape_type == 6:  # group
-        for s in sh.shapes: shape_items(s, out)
-        return
-    if sh.has_text_frame:
-        for p in sh.text_frame.paragraphs:
-            t = ''.join(r.text for r in p.runs)
-            if t.strip(): out['text'].append(t)
-            for r in p.runs:
-                if r.hyperlink and r.hyperlink.address: out['links'].append(r.hyperlink.address)
-    if getattr(sh, 'has_table', False) and sh.has_table:
-        out['tables'].append([[c.text for c in row.cells] for row in sh.table.rows])
-    if getattr(sh, 'has_chart', False) and sh.has_chart:
-        ch = sh.chart
-        out['charts'].append(dict(cats=[str(c) for c in ch.plots[0].categories] if ch.plots else [],
-                                  series=[[s.name, list(s.values)] for p in ch.plots for s in p.series]))
-    if sh.shape_type == 13:  # picture
-        out['images'].append(hashlib.sha1(sh.image.blob).hexdigest())
-
-prs = Presentation(sys.argv[1])
-slides = []
-for s in prs.slides:
-    out = dict(text=[], links=[], tables=[], charts=[], images=[])
-    for sh in s.shapes: shape_items(sh, out)
-    out['notes'] = s.notes_slide.notes_text_frame.text if s.has_notes_slide else ''
-    for k in ('text', 'links', 'images'): out[k] = sorted(out[k])
-    slides.append(out)
-json.dump(dict(slide_count=len(slides), slides=slides), open(sys.argv[2], 'w'), indent=1, default=str)
 ```
+python $S/transplant_design.py truth.pptx target.pptx layout_map.json s1.pptx --spec truth_spec.json
+python $S/remap_placeholders.py s1.pptx truth.pptx truth_spec.json s2.pptx --approved approved.json
+python $S/strip_overrides.py   s2.pptx truth_spec.json s3.pptx [--roles roles.json]
+python $S/place.py             s3.pptx truth_spec.json s4.pptx [--plan plan.json]
+python $S/visual_groups.py detect s4.pptx groups.json --sheets group_sheets   # review, edit, confirm
+python $S/visual_groups.py apply  s4.pptx truth_spec.json groups.json s5.pptx
+python $S/fit_text.py          s5.pptx "<name> - restyled.pptx"
+```
+Or run it all at once: `python $S/pipeline.py truth.pptx target.pptx --work WORK --approved approved.json [--groups groups.json] [--map layout_map.json] [--roles roles.json]`. Exit code 0 = done, 2 = questions for the user (listed in `report.md`), 1 = a check failed.
 
----
+What each step guarantees:
+- **4a. transplant_design:**
+  - first freezes every placeholder's current geometry;
+  - then swaps the target's theme, masters and layouts for the truth's, renaming parts so nothing collides and fixing relationships, content types, master and layout ids, slide size, default text style and table styles;
+  - garbage-collects only parts no slide uses anymore. Videos, GIFs, charts and workbooks stay.
+- **4b. remap_placeholders:**
+  - matches each slide placeholder to its truth layout placeholder (same idx, then the same kind) and rewrites its type and idx. A body with `idx=1` becomes the truth's `idx=13` when needed;
+  - clears its local geometry, so it inherits the truth position exactly;
+  - **adds slide-level footer, slide-number and date placeholders** wherever the truth slides show them (a layout placeholder alone never appears on a slide), with the truth footer text;
+  - copies truth slide-level fixed elements (a badge on every truth slide) at their exact box;
+  - deletes only approved leftovers and never reuses a shape id.
+- **4c. place:** moves all free content of a slide (pictures, GIFs, video, charts, tables, text boxes, groups) as **one block**, using one uniform scale plus one move into the layout's content area, aligned to the truth's left content line. Arrangement and aspect ratios survive, and nothing is cropped. It reports anything that touches a fixed element. To place a slide by hand, use `plan.json`: `{"<slide>": {"area": [x,y,w,h], "boxes": {"<id>": [x,y,w,h]}}}`.
+- **4c-bis. visual_groups apply:** members of a confirmed group get the **same box**. Each visual is fitted inside the box and centered, never stretched or cropped beyond the original.
+  - Rows share one top edge and use equal gaps, spread over the row's span. Add `"gap": "truth"` to a group to use the truth gap.
+  - Captions keep one shared line and stay centered under their own visual.
+  - A visual repeated across slides gets the first occurrence's box, and its spot too unless that would overlap other content there (then the size matches, and it's reported).
+- **4d. strip_overrides:**
+  - **Removed:** local fonts, sizes, colors, spacing, alignment, indents, bullet styling, shape list styles and stale autofit scales. Free text boxes get the truth role style written into their own list style, and keep their alignment.
+  - **Kept:** bold, italic, underline, strike, super/subscript, highlight, links, list type (bullet / number / none) and paragraph level. **Semantic color** (a red "12%" inside black text) is kept and reported. Drop it only with `--drop-semantic-color` and the user's yes.
+  - **Tables** get the truth table style, flags, cell margins and text size. **Charts** get the truth palette order, font sizes, legend and gridlines. Data, categories and workbooks are never touched.
+  - **Pictures and media frames** get the truth frame style. The image and the crop never change.
+- **4e. fit_text:** measures text with real font metrics. If text doesn't fit, it shrinks 1 pt at a time down to **85% of the truth size** (never below 10 pt body or 8 pt small text), then tightens line spacing one step (100% → 90%). If it still doesn't fit, it **stops and asks**: split the slide (keeps every word, adds a slide), allow a smaller size this once (`--allow SLIDE:SHAPE`), or the user trims the text. Every shrink is listed in the report.
+- **Media floor:** a GIF, video or audio frame scaled below 85% of its size needs approval (`approved.json` → `media_scale`).
+- **4f. Validate the file:** `python <pptx skill>/scripts/office/validate.py "<name> - restyled.pptx" --original target.pptx`. Fix everything it reports. `pipeline.py` runs this automatically when the pptx skill is present.
 
-## Step 4 — Restyle the target
+## Step 5 — Verify (all must pass before delivery)
 
-Restyle **inside the target's own file**, so its text, images, charts and tables never leave it. Use the pptx skill's unpack, edit and zip workflow and its XML rules (parse with `defusedxml`/`lxml`, never `ElementTree`).
+```
+python $S/fingerprint.py restyled.pptx after_fingerprint.json
+python $S/compare_fingerprint.py before_fingerprint.json after_fingerprint.json --approved approved.json
+python $S/check_media.py target.pptx restyled.pptx --approved approved.json
+python $S/check_geometry.py restyled.pptx truth.pptx truth_spec.json
+python $S/render.py restyled.pptx renders/after
+python $S/band_diff.py truth_spec.json restyled.pptx renders/truth renders/after --out band_diffs
+```
+- **5a. Content lock (`compare_fingerprint`):** any difference is a failure, except approved changes and the truth furniture that was added. It catches a changed word, swapped bullets, a changed chart value or edited notes.
+- **5a-bis. Media and animation integrity (`check_media`):** same GIF, video and audio bytes, poster frames, trim and playback settings, GIF frames; same animation timeline and transitions; every animation target still exists and is the same shape; aspect ratios kept; no unapproved shrink below 85%.
+- **5b. Geometry and style (`check_geometry`, exact, in EMU):**
+  - layout XML identical to the truth;
+  - fixed elements at 0 EMU difference, and every footer, slide number and date the truth shows is present and inherited;
+  - matched placeholders inherit the truth geometry;
+  - no free content in the borders or over a fixed element;
+  - every run's *effective* font, size and color, and every paragraph's spacing and alignment, equal what the truth gives it, apart from emphasis, kept semantic colors and listed shrinks;
+  - visual groups have identical slots, a shared edge and equal gaps.
+- **5c. Visual:**
+  - `band_diff` compares the fixed-element regions pixel by pixel against a truth slide of the same layout, with slide numbers and dates masked. A failure usually means text running into the footer, or furniture that moved.
+  - Then look yourself, with fresh eyes. For long decks, start with the contact sheets (`before_after.py … --sheets`) and open full renders only for flagged slides. Look for overflow, clipping, overlap, words broken across lines, and the same empty borders, alignment lines and rhythm of gaps as the truth.
+  - Renders show only a video's poster frame and a GIF's first frame, so the visual check for media covers placement only. `check_media` covers the rest.
 
-### 4a. Bring in the truth design system
-1. Replace the target's theme, slide master(s) and slide layouts with the truth file's, including their rels and the media they reference (backgrounds, logos). Update `[Content_Types].xml`, `ppt/presentation.xml` (`sldMasterIdLst`, `sldSz`) and `ppt/_rels/presentation.xml.rels`.
-2. Point each target slide's layout relationship at its mapped truth layout.
-3. Remove the old masters, layouts and theme only after nothing points at them (pptx skill `clean.py`).
-
-### 4b. Place the fixed elements — exact, never adjusted
-- Header, footer, slide number, date and logos come from the truth file **at the exact EMU position, size and crop**. If they live on the truth master or layout, they arrive with 4a. If the truth file has them on its slides, copy those shapes onto each target slide.
-- Fixed elements are never shrunk, moved or restyled to make room for content. Content moves around them.
-- Remove the target's own old header, footer and logo **only where the user approved it** in Step 3.
-
-### 4c. Place the content inside the borders
-- Placeholders: clear the slide-level `<a:xfrm>` so each one inherits the truth layout's geometry. Otherwise set it to the layout's exact x, y, w, h.
-- Non-placeholder content (images, charts, tables, free text boxes): fit it inside the truth safe area for that layout. Use the truth borders (left/top/right/bottom) and the truth gaps between blocks and columns. Keep image aspect ratios and never crop more than the original did. Align edges to the same lines the truth file uses.
-- Nothing may sit in the border space or overlap a fixed element.
-
-### 4d. Apply the text styles
-For every paragraph that is copied or kept:
-- **Strip local design overrides.** On `<a:rPr>` remove size, font (`latin`/`ea`/`cs`), color fills and character spacing. On `<a:pPr>` remove alignment, spacing, indents and bullet overrides. Then the truth layout's styles apply through inheritance.
-- **Keep meaning-carrying emphasis by default:** bold, italic, underline, strikethrough and hyperlinks on individual words inside a sentence. Keep the paragraph `lvl` (indent level), and keep numbered lists numbered (use the truth file's numbered style if one exists).
-- Text boxes get the truth insets, wrap and autofit settings for their role.
-- Tables get the truth table style, borders, cell margins and fonts. Charts get the truth palette order, label fonts, sizes and gridlines. Only the styling XML changes. Chart data and table values are never touched.
-
-### 4e. When content doesn't fit — shrink, but gently
-Work in this order and stop at the first step that works:
-1. Use the full truth safe area for that layout (no extra margin beyond the truth borders).
-2. Shrink the text in that shape in steps of 1 pt, **down to 85% of the truth size for that role** (for example 20 pt → 17 pt). Never below 10 pt for body text or 8 pt for footnotes and table text. Shrink line spacing by at most one step (for example 1.0 → 0.9) after the size reaches its floor.
-3. Shrink tables and charts proportionally inside the safe area, using the same floors for their text.
-4. **Still too much? Stop and ask.** Offer: split the slide in two (keeps every word, adds a slide); allow a smaller size this once; or the user trims the text. Never cut, reword or move content to another slide without a yes.
-
-Every shrink is listed in the report with the slide, the shape and the before/after size.
-
-### 4f. Rebuild and validate the file
-Zip the deck and run the pptx skill's validator with the target as the original:
-`python <pptx skill>/scripts/office/validate.py restyled.pptx --original target.pptx`
-Fix everything it reports before moving on.
-
----
-
-## Step 5 — Verify
-
-All three checks must pass before anything is delivered. If one fails, fix and run all three again.
-
-### 5a. Content check (must be identical)
-Run `fingerprint.py` on the restyled deck and compare it with `before_fingerprint.json`: slide count, every text paragraph, hyperlinks, table cells, chart categories and values, image hashes and speaker notes. **Any difference is a failure**, unless it is a change the user approved, which is listed in the report. Old footer/logo text the user approved for removal is the only expected difference.
-
-### 5b. Geometry check (exact numbers)
-For each restyled slide, compare against the truth spec in EMU:
-- Fixed elements (header, footer, logo, slide number): **exact match**, 0 EMU difference in x, y, w, h and crop.
-- Placeholders: exact match with the truth layout.
-- Borders: no content shape closer to any slide edge than the truth border for that layout.
-- Gaps: block-to-block and column gaps equal the truth gap values, unless shrinking (4e) required a change, which goes in the report.
-- Text: every run's effective font, size, color and paragraph spacing equals the truth role style, apart from listed shrinks.
-
-### 5c. Visual check
-Render the restyled deck to images (`after-*.jpg`) at 150 dpi and look at every slide fresh. Compare it with the truth slide of the same layout:
-- Header, footer and logo are in the same spot on every slide. Toggling between the truth render and the after render shows no shift.
-- No text overflow, clipping, overlap or words broken across lines.
-- Same empty borders, same alignment lines, same rhythm of gaps.
-
-LibreOffice substitutes fonts it doesn't have. If a truth font is missing from the render environment, say so, and don't trust text-fit in the preview for that font. The geometry check (5b) still applies.
-
----
+If a check fails: fix, then run **all** checks again.
 
 ## Step 6 — Deliver
 
-Give the user three things:
+1. **The restyled deck:** `<original name> - restyled.pptx`.
+2. **Before / after PDF:** `python $S/before_after.py renders/before renders/after "<name> - before-after.pdf" --labels "<restyled>.meta.json"`. One page per slide: original left, restyled right, with the slide number and truth layout.
+3. **A short report** (`pipeline.py` writes `report.md`):
+   - checks passed;
+   - slide → truth layout;
+   - every shrink (slide, shape, from → to);
+   - semantic colors kept;
+   - what was removed with approval;
+   - visual groups made identical;
+   - media placements (content verified unchanged);
+   - anything that couldn't match the truth exactly, and why;
+   - missing fonts;
+   - anything waiting on the user.
 
-1. **The restyled deck** (`<original name> - restyled.pptx`).
-2. **Before / after comparison.** Build one PDF (or HTML page) with one row per slide: original on the left, restyled on the right, slide number and mapped truth layout above. Build it from the `before-*.jpg` and `after-*.jpg` renders, for example with Pillow pasting the pairs side by side and saving them as a multi-page PDF.
-3. **A short report:**
-   - content check: passed (or the approved changes, listed),
-   - slide → truth layout used,
-   - every shrink applied (slide, shape, from → to),
-   - anything that couldn't match the truth exactly and why,
-   - anything waiting on the user's decision.
-
-Then ask for the next target. The truth spec stays loaded.
+Then ask for the next target. The truth spec stays loaded, and `truth_spec.json` is saved for later sessions.
 
 ---
 
 ## Running inside PowerPoint (Claude in PowerPoint / Microsoft 365 add-in)
 
-When the skill runs inside PowerPoint instead of on uploaded files, the same rules and the same order apply. Only the tools change:
-
-- **Truth file:** the user opens or attaches the truth deck first. Read its slide size, layouts, placeholder positions, fonts, colors, fixed elements, borders and gaps through the add-in's PowerPoint actions, and build the same spec. Summarize it and get confirmation exactly as in Step 2.
-- **Target:** the open deck is the target. Save a duplicate first (or ask the user to) so the original survives for the before/after.
-- **Restyle** with the add-in's actions to set each shape's position, size, font, size, color, spacing and fill to the spec values, and to apply the truth layouts/theme where the add-in supports it. If the add-in can't do something (for example importing a slide master), say so and offer the file-based route for that part.
-- **Verify:** re-read every shape's properties after changes and compare them with the spec (5a and 5b). For the before/after, export or screenshot slides from both copies where the add-in allows it. Otherwise list the changes per slide.
+The same rules and order apply. Only the tools change.
+- **Truth:** read the slide size, layouts, placeholder positions, fonts, colors, fixed elements, borders and gaps through the add-in's actions. Build the same spec, then summarize it and confirm as in Step 2.
+- **Target:** the open deck. Save a duplicate first (or ask the user to), so the original survives for the before/after.
+- **Restyle:** set each shape's position, size, font, size, color, spacing and fill to the spec values, and apply the truth layouts and theme where the add-in supports it. **Move and resize** GIFs, videos and animated shapes only; never replace or re-insert them, because that would drop their animations. If the add-in can't do something (for example importing a slide master), say so and offer the file-based route for that part.
+- **Verify:** re-read every shape's properties and compare them with the spec (5a, 5b). Export or screenshot slides from both copies for the before/after where possible; otherwise list the changes per slide.
 - **The content lock is the same.** Never type into, delete or add slides or text boxes without permission.
-
----
 
 ## Things that always need the user's permission
 
-- Changing, deleting or adding any text, number, image, chart data, table cell, note or link
+- Changing, deleting or adding any text, number, image, GIF, video, audio, chart data, table cell, note, link or alt text
+- Changing, removing or re-creating animations or transitions, or replacing a media file or its poster frame
 - Adding or deleting a slide, including splitting an overfull slide
 - Reordering slides
-- Removing old header/footer/logo items that contain text
-- Shrinking below the 85% floor or the minimum sizes
+- Removing old header, footer or logo items that contain text or images
+- Shrinking text below the 85% floor or the minimum sizes, or a media frame below 85% of its size
+- Removing semantic text color, or a picture background
 - Using a layout the truth file doesn't have, or inventing a style the truth file doesn't define
 - Scaling content to a different aspect ratio
+
+## Known limits (say so when they apply)
+
+- **Charts pasted as pictures** can't be restyled; they are placed like images.
+- **Diagrams built from plain shapes** (arrows, boxes) keep their own fills unless the user asks for `--restyle-boxes` (truth box style).
+- **SmartArt** text is locked and checked, but SmartArt colors follow the theme only.
+- **Embedded fonts** in the target aren't carried over. The truth fonts apply.
+- **Font substitution:** renders use substitutes for fonts that aren't installed, so text fit for those fonts is an estimate. The geometry checks are exact regardless.
+- **Fit estimates** assume PowerPoint-like line breaking. On a tight box, look at the render before you trust it.
+
+## Testing the skill
+
+`python tests/run_tests.py` builds fixture decks and runs the full flow. Covered:
+- a 16:9 truth with custom placeholder idx, a logo, a footer and a badge;
+- a 4:3 target with overrides, semantic red, a hyperlink, notes, leftovers, an icon row, a GIF, animations, a transition, an MP4 with a poster frame, a table, a chart, a group, a repeated screenshot and overflow;
+- mutation tests that must each fail the right check.
+
+Cases are described in `tests/evals.md`.
