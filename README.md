@@ -21,6 +21,15 @@ Add this folder (with `SKILL.md`, `scripts/` and `tests/`) as a skill in Claude,
 
 Run `python scripts/preflight.py truth.pptx` to see what's available and which truth fonts are missing.
 
+### Where to run it
+**Run the restyle in Claude with code execution on** (Claude Code, or claude.ai with code execution enabled). Every guarantee comes from the scripts: the master and layout transplant, the placeholder remap, the content lock, the 0-EMU geometry check, the media and animation check, and the renders and pixel check. Without code execution none of these can run.
+
+**Then open the result in PowerPoint** for:
+- a final look with the real fonts and renderer (text fit, video playback, animations), since LibreOffice substitutes missing fonts;
+- small fixes on the slides the report flags.
+
+The Claude in PowerPoint add-in can follow the same rules, but it can't import a slide master or verify media bytes, so it checks its own work less strictly. For the best previews, upload the truth deck's font files.
+
 ## Example session
 
 ```

@@ -185,7 +185,7 @@ Then ask for the next target. The truth spec stays loaded, and `truth_spec.json`
 
 ## Running inside PowerPoint (Claude in PowerPoint / Microsoft 365 add-in)
 
-The same rules and order apply. Only the tools change.
+The same rules and order apply. Only the tools change. **Prefer the file-based route above for a full restyle**: only it can run the scripts and their checks. Use the add-in for touch-ups, decisions on flagged slides, and a final review with the real fonts. When the user is in the add-in and asks for a full restyle, say this once and offer the file-based route.
 - **Truth:** read the slide size, layouts, placeholder positions, fonts, colors, fixed elements, borders and gaps through the add-in's actions. Build the same spec, then summarize it and confirm as in Step 2.
 - **Target:** the open deck. Save a duplicate first (or ask the user to), so the original survives for the before/after.
 - **Restyle:** set each shape's position, size, font, size, color, spacing and fill to the spec values, and apply the truth layouts and theme where the add-in supports it. **Move and resize** GIFs, videos and animated shapes only; never replace or re-insert them, because that would drop their animations. If the add-in can't do something (for example importing a slide master), say so and offer the file-based route for that part.
