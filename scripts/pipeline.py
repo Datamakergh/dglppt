@@ -8,7 +8,8 @@
 
 Steps (each one is also a script you can run alone):
   extract_truth (if no --spec) -> fingerprint (before) -> map_layouts (if no --map)
-  -> transplant_design -> remap_placeholders -> strip_overrides -> place
+  -> transplant_design -> remap_placeholders -> strip_overrides
+  -> apply_truth_slide_design -> place
   -> visual_groups (confirmed --groups, else only high-confidence proposals)
   -> fit_text -> validate (pptx skill) -> fingerprint + compare (content lock)
   -> check_geometry -> check_media -> render + band_diff -> before_after -> report.md
@@ -87,8 +88,10 @@ def main():
     run('transplant_design.py', [a.truth, original, lmap, s1, '--spec', spec], log)
     remap = [s1, a.truth, spec, s2] + (['--approved', a.approved] if a.approved else [])
     run('remap_placeholders.py', remap, log)
+    s3b = j('step3b.pptx')
     run('strip_overrides.py', [s2, spec, s3] + (['--roles', a.roles] if a.roles else []), log)
-    run('place.py', [s3, spec, s4] + (['--plan', a.plan] if a.plan else []), log)
+    run('apply_truth_slide_design.py', [s3, a.truth, spec, s3b] + (['--approved', a.approved] if a.approved else []), log)
+    run('place.py', [s3b, spec, s4] + (['--plan', a.plan] if a.plan else []), log)
     groups = a.groups
     if not groups:
         run('visual_groups.py', ['detect', s4, j('groups_proposed.json'), '--sheets', j('group_sheets')], log)
@@ -109,6 +112,11 @@ def main():
 
     meta = json.load(open(final + '.meta.json'))
     for s in meta.get('fit', {}).get('needs_decision', []):
+        if s.get('reason') == 'truth-slide design':
+            questions.append(f"Slide {s['slide']} '{s['name']}': with the design copied from truth slide "
+                             f"{s.get('truth_slide')} ({', '.join(s.get('props', []))}) the text doesn't fit. "
+                             "Split the slide in two, allow a smaller size this once, or trim the text yourself?")
+            continue
         questions.append(f"Slide {s['slide']} '{s['name']}' doesn't fit even at {s['floor_pt']} pt "
                          "(85% of the truth size): split the slide in two, allow a smaller size this once, "
                          "or trim the text yourself?")
@@ -117,6 +125,8 @@ def main():
     for s in meta.get('remap', {}).get('kept_footer_text', []):
         questions.append(f"Slide {s['slide']} keeps its own footer text '{s['text']}': replace it with the "
                          "truth footer text?")
+    for q in meta.get('design', {}).get('questions', []):
+        questions.append(q)
     for s in meta.get('style', {}).get('backgrounds_kept', []):
         questions.append(f"Slide {s['slide']} has a picture background (content): keep it?")
 

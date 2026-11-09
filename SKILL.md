@@ -17,7 +17,7 @@ All the mechanical work is done by the scripts in `scripts/` (python-pptx, lxml,
    - **animations and transitions**, and the shapes they point at.
 
    Media and animated content may change in **placement only**: position and size, with the aspect ratio kept. They also take the truth file's frame styling (border, shadow, corners) when the truth defines one. If restyling seems to need a content change (splitting a slide, dropping an old footer line, removing a duplicate logo), **stop and ask**. One approval covers one change only. Record every approval in `approved.json` (format below).
-2. **The truth file wins on every design decision.** Positions, sizes, margins, gaps, fonts, sizes, colors, line spacing, bullets, insets, fills, borders, header, footer, slide number and logo all come from the truth file. When the truth file doesn't define something the target needs (no table in the truth, for example), ask rather than invent.
+2. **The truth file wins on every design decision.** That includes where the truth *slides* put things, not only what its layouts say: a placeholder the author moved on a truth slide is placed there on every target slide with the same layout. Positions, sizes, margins, gaps, fonts, sizes, colors, line spacing, bullets, insets, fills, borders, header, footer, slide number and logo all come from the truth file. When the truth file doesn't define something the target needs (no table in the truth, for example), ask rather than invent.
 
 ## Session flow
 
@@ -105,7 +105,8 @@ The restyle happens inside the target's package, so its slides, media, charts an
 python $S/transplant_design.py truth.pptx target.pptx layout_map.json s1.pptx --spec truth_spec.json
 python $S/remap_placeholders.py s1.pptx truth.pptx truth_spec.json s2.pptx --approved approved.json
 python $S/strip_overrides.py   s2.pptx truth_spec.json s3.pptx [--roles roles.json]
-python $S/place.py             s3.pptx truth_spec.json s4.pptx [--plan plan.json]
+python $S/apply_truth_slide_design.py s3.pptx truth.pptx truth_spec.json s3b.pptx --approved approved.json
+python $S/place.py             s3b.pptx truth_spec.json s4.pptx [--plan plan.json]
 python $S/visual_groups.py detect s4.pptx groups.json --sheets group_sheets   # review, edit, confirm
 python $S/visual_groups.py apply  s4.pptx truth_spec.json groups.json s5.pptx
 python $S/fit_text.py          s5.pptx "<name> - restyled.pptx"
@@ -133,7 +134,12 @@ What each step guarantees:
   - **Kept:** bold, italic, underline, strike, super/subscript, highlight, links, list type (bullet / number / none) and paragraph level. **Semantic color** (a red "12%" inside black text) is kept and reported. Drop it only with `--drop-semantic-color` and the user's yes.
   - **Tables** get the truth table style, flags, cell margins and text size. **Charts** get the truth palette order, font sizes, legend and gridlines. Data, categories and workbooks are never touched.
   - **Pictures and media frames** get the truth frame style. The image and the crop never change.
-- **4e. fit_text:** measures text with real font metrics. If text doesn't fit, it shrinks 1 pt at a time down to **85% of the truth size** (never below 10 pt body or 8 pt small text), then tightens line spacing one step (100% → 90%). If it still doesn't fit, it **stops and asks**: split the slide (keeps every word, adds a slide), allow a smaller size this once (`--allow SLIDE:SHAPE`), or the user trims the text. Every shrink is listed in the report.
+- **4d-bis. apply_truth_slide_design (runs after strip_overrides):** a truth deck is often designed *on its slides*: the author moved a title, changed a size or color, anchored text at the bottom, filled a box, set a background, drew a line. That is design, and the restyle copies all of it. Without this step the target follows the bare layout and looks different from the truth slides. For each target slide on layout L, the **best-matching truth slide on L** donates (best match = same placeholder set first, then the closest amount of text per placeholder, then the first; the choice is reported):
+  - **placeholders** (matched by type + idx): position and size, fill, outline, effects, shape geometry; text-box settings (anchor, insets, wrap, autofit; a stale autofit scale is dropped); the shape's list style; paragraph alignment, margins, indents, line and paragraph spacing, bullet appearance; run size, font, color, letter spacing, caps. Run properties fill gaps only: kept semantic colors and the target's own bold/italic/underline always win. Footer, date and slide number always inherit. A picture fill is never copied.
+  - **slide background:** solid, gradient or theme. A picture background is content: it is asked about, not copied.
+  - **one-off shapes** drawn on the truth slide: decorative ones (no text, no picture, no media) are copied behind or in front as on the truth slide. Ones with text or a picture are content and are listed as questions; add `{"layout": "<key>", "shape_name": "<name>"}` to `approved.json` → `add` to copy them.
+  - Never touched: text, shape ids, pictures, tables, charts, media, animations, notes. `place.py` leaves these placeholders where they are, `check_geometry` verifies the positions exactly and compares copied text properties against the donor, and `fit_text` never shrinks them (see 4e).
+- **4e. fit_text:** measures text with real font metrics. If text doesn't fit, it shrinks 1 pt at a time down to **85% of the truth size** (never below 10 pt body or 8 pt small text), then tightens line spacing one step (100% → 90%). If it still doesn't fit, it **stops and asks**: split the slide (keeps every word, adds a slide), allow a smaller size this once (`--allow SLIDE:SHAPE`), or the user trims the text. Every shrink is listed in the report. **Exception: a shape that carries design copied from a truth slide (4d-bis) is never shrunk silently.** If it doesn't fit, it goes straight to "needs decision" and the user is always asked first, with the truth slide and what was copied named in the question.
 - **Media floor:** a GIF, video or audio frame scaled below 85% of its size needs approval (`approved.json` → `media_scale`).
 - **4f. Validate the file:** `python <pptx skill>/scripts/office/validate.py "<name> - restyled.pptx" --original target.pptx`. Fix everything it reports. `pipeline.py` runs this automatically when the pptx skill is present.
 
@@ -151,12 +157,13 @@ python $S/band_diff.py truth_spec.json restyled.pptx renders/truth renders/after
 - **5a-bis. Media and animation integrity (`check_media`):** same GIF, video and audio bytes, poster frames, trim and playback settings, GIF frames; same animation timeline and transitions; every animation target still exists and is the same shape; aspect ratios kept; no unapproved shrink below 85%.
 - **5b. Geometry and style (`check_geometry`, exact, in EMU):**
   - layout XML identical to the truth;
+  - placeholders sit where the truth slide put them (or inherit the layout when the truth slide did not move them);
   - fixed elements at 0 EMU difference, and every footer, slide number and date the truth shows is present and inherited;
   - matched placeholders inherit the truth geometry;
   - no free content in the borders or over a fixed element;
   - every run's *effective* font, size and color, and every paragraph's spacing and alignment, equal what the truth gives it, apart from emphasis, kept semantic colors and listed shrinks;
   - visual groups have identical slots, a shared edge and equal gaps.
-- **5c. Visual:**
+- **5c. Visual:** a passing script check proves the file matches the layouts and the copied boxes, not that it looks like the truth slides. Always put the truth renders and the restyled renders side by side (same layout, same slide type) and compare placements by eye before delivering. When a truth slide looks odd (a title far to the right, a caption at the bottom), check the slide XML: it is usually a deliberate slide-level move, not a layout property, so do not describe it to the user as a layout.
   - `band_diff` compares the fixed-element regions pixel by pixel against a truth slide of the same layout, with slide numbers and dates masked. A failure usually means text running into the footer, or furniture that moved.
   - Then look yourself, with fresh eyes. For long decks, start with the contact sheets (`before_after.py … --sheets`) and open full renders only for flagged slides. Look for overflow, clipping, overlap, words broken across lines, and the same empty borders, alignment lines and rhythm of gaps as the truth.
   - Renders show only a video's poster frame and a GIF's first frame, so the visual check for media covers placement only. `check_media` covers the rest.
@@ -201,6 +208,8 @@ The same rules and order apply. Only the tools change. **Prefer the file-based r
 - Removing old header, footer or logo items that contain text or images
 - Shrinking text below the 85% floor or the minimum sizes, or a media frame below 85% of its size
 - Removing semantic text color, or a picture background
+- Shrinking text or media that carries design copied from a truth slide, even slightly
+- Copying a one-off truth-slide shape that has text or a picture, or a picture background
 - Using a layout the truth file doesn't have, or inventing a style the truth file doesn't define
 - Scaling content to a different aspect ratio
 

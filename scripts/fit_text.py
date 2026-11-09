@@ -183,6 +183,8 @@ def main():
         meta = {}
     fixed_ids = {(x['slide'], x['shape_id']) for x in meta.get('remap', {}).get('added_fixed', [])}
     allowed = set(a.allow)
+    # shapes whose position, box or text style was copied from a truth slide: never shrunk silently
+    designed = {(x['slide'], x['shape_id']): x for x in meta.get('design', {}).get('shapes', [])}
     report = dict(shrinks=[], needs_decision=[], broken_words=[], approximate_fonts=set(), checked=0)
 
     for n, part in enumerate(pkg.slide_parts(), 1):
@@ -226,6 +228,15 @@ def main():
             floor = max(truth_size * a.floor, minimum)
             if f'{n}:{shape_id(el)}' in allowed:
                 floor = minimum
+            elif (n, shape_id(el)) in designed:
+                d = designed[(n, shape_id(el))]
+                report['needs_decision'].append(dict(
+                    where, need_pt=round(need, 1), have_pt=round(have, 1), truth_pt=truth_size,
+                    floor_pt=floor, reason='truth-slide design', truth_slide=d['truth_slide'], props=d['props'],
+                    options=['split the slide in two (keeps every word)',
+                             'allow a smaller size this once (--allow)',
+                             'the user trims the text']))
+                continue
             size = current
             fitted = False
             while size - 1 >= floor - 1e-6:

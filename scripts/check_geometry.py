@@ -10,8 +10,8 @@ Checks, per slide, in EMU (0 tolerance unless stated):
   fixed        truth slide-level fixed elements sit at their exact box and crop;
                the footer / slide number / date the truth shows are present and
                inherit their geometry (no local xfrm); none was moved
-  placeholders matched placeholders carry no local geometry (they inherit the
-               truth layout exactly)
+  placeholders matched placeholders inherit the truth layout, or sit exactly where
+               the truth slide put them (boxes copied by apply_truth_slide_design.py)
   borders      no free content closer to an edge than the truth border
   overlap      no free content overlaps a fixed element (header, footer, logo…)
   text         each run's effective font, size, color, alignment and spacing equals
@@ -61,6 +61,13 @@ def main():
     semantic = {(s['slide'], s['shape_id']) for s in meta.get('style', {}).get('semantic_color_kept', [])}
     roles = {(r['slide'], r['shape_id']): r['role'] for r in meta.get('style', {}).get('free_text_roles', [])}
     approved_overlaps = set()
+    # placeholder boxes copied from the truth slides (apply_truth_slide_design.py)
+    positioned = {(x['slide'], x['shape_id']): x['box']
+                  for x in meta.get('positions', {}).get('copied', [])}
+    # text design copied from truth slides: those properties are compared against the donor, not the layout
+    designed = {(x['slide'], x['shape_id']): set(x['props']) for x in meta.get('design', {}).get('shapes', [])}
+    for x in meta.get('design', {}).get('added', []):  # decorative one-offs copied from a truth slide
+        added[(x['slide'], x['shape_id'])] = dict(x, box=x['box'])
 
     fixed_boxes = [fe['box'] for fe in spec['fixed_elements'] if fe.get('box') and fe['source'] != 'slide'
                    and not (fe['box'][2] >= 0.98 * W and fe['box'][3] >= 0.98 * H)]
@@ -95,7 +102,10 @@ def main():
                 if read_xfrm(el) is not None:
                     fail(n, f"{ph[0]} placeholder has local geometry (must inherit the truth position)")
                 continue
-            if ph and read_xfrm(el) is None:
+            if ph and (n, sid) in positioned:
+                if read_xfrm(el) != positioned[(n, sid)]:
+                    fail(n, f"placeholder '{shape_name(el)}' moved off the truth slide's position")
+            elif ph and read_xfrm(el) is None:
                 box = inherited_box(pkg, part, el)
             elif depth == 0:
                 box = read_xfrm(el)
@@ -118,8 +128,12 @@ def main():
                     else:
                         lvl = para['level']
                         epara, erun = so.role_style(ctx, spec, roles.get((n, sid), 'textbox'), lvl)
+                    dprops = designed.get((n, sid), set())
+                    all_free = 'list_style' in dprops
                     for k in TEXT_KEYS:
                         if erun.get(k) is None or run.get(k) == erun.get(k):
+                            continue
+                        if all_free or k in dprops:
                             continue
                         if k == 'size' and (n, sid) in shrinks:
                             continue
@@ -128,6 +142,8 @@ def main():
                         fail(n, f"'{shape_name(el)}' run {r.findtext(A + 't')[:25]!r}: {k} {run.get(k)} != truth {erun.get(k)}")
                     keys = PARA_KEYS if ph else tuple(k for k in PARA_KEYS if k != 'align')
                     for k in keys:
+                        if all_free or k in dprops:
+                            continue
                         if k == 'line_spacing' and (n, sid) in shrinks:
                             continue
                         if epara.get(k) is not None and para.get(k) != epara.get(k):
