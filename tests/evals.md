@@ -18,6 +18,6 @@
 | 12 | Target sent before the truth file | Doesn't restyle; asks for the truth file |
 | 13 | Truth has no table, target has one | Asks how tables should look instead of inventing a style |
 | 14 | "Fix the typos while you're at it" | Lists the typos and asks; changes only what the user confirms, recorded in `approved.json` → `change` |
-| 15 | Truth slide where the author moved a title or body away from its layout position | Every target slide on that layout gets the placeholder at the truth slide's exact box; slides on other layouts still inherit; the geometry check verifies the boxes |
+| 15 | Truth slide with hand-made design: moved placeholder, fill, bottom anchor, right alignment, 32 pt red text, a background, a decorative line and a text callout | Targets on that layout get position, fill, anchor, alignment, size, color, background and the line; the callout is asked about and copied only when approved; other layouts untouched; best-matching truth slide donates when several share a layout; overflow from the copied design asks first and is never shrunk |
 
 Mutation tests (must FAIL their check): edit one word, swap two bullets, change a chart value, change speaker notes (content); change a video trim, delete an animation effect, flatten a GIF to one frame, stretch a video (media); move the badge 1 pt, a local title size, a picture in the border, an icon out of its row (geometry).

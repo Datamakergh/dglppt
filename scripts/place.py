@@ -76,6 +76,10 @@ def main():
     max_scale = a.max_scale or max(1.0, W / ow, H / oh)
     fixed_ids = {(x['slide'], x['shape_id']) for x in meta.get('remap', {}).get('added_fixed', [])}
     positioned = {(x['slide'], x['shape_id']) for x in meta.get('positions', {}).get('copied', [])}
+    fixed_ids |= {(x['slide'], x['shape_id']) for x in meta.get('design', {}).get('added', [])}
+    # placeholders that carry truth-slide design keep their own box (position copied or inherited)
+    positioned |= {(x['slide'], x['shape_id']) for x in meta.get('design', {}).get('shapes', [])
+                   if 'xfrm' in x['props']}
     report = dict(slides=[], needs_approval=[], overlaps=[])
 
     fixed_boxes = [fe['box'] for fe in spec['fixed_elements'] if fe.get('box') and fe['source'] != 'slide'

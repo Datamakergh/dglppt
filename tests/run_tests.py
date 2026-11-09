@@ -233,38 +233,113 @@ def main():
         rc, out = script('check_geometry.py', m, truth, os.path.join(w1, 'truth_spec.json'))
         check(f'geometry check catches: {label}', rc == 1, out[-300:])
 
-    print('\n# truth-slide placeholder positions')
-    # a truth slide whose author moved a placeholder: targets on that layout must follow it
+    print('\n# truth-slide design copied onto targets')
     moved = [123456, 234567, 3456789, 456789]
-    tp = os.path.join(work, 'truth_moved.pptx')
+    tp = os.path.join(work, 'truth_designed.pptx')
     ts0 = spec['slides'][0]
+    info = {}
 
-    def move_on_truth(tpkg):
+    def design_truth(tpkg):
+        part = tpkg.slide_parts()[0]
+        root = tpkg.xml(part)
         for el in shapes(tpkg, 1):
             ph = ph_of(el)
-            if ph and ph[0] not in ('ftr', 'sldNum', 'dt', 'hdr'):
-                write_xfrm(el, moved)
-                return (ph[0], ph[1])
+            if not ph or ph[0] in ('ftr', 'sldNum', 'dt', 'hdr') or el.find(P + 'txBody') is None:
+                continue
+            info['key'] = (ph[0], ph[1])
+            write_xfrm(el, moved)
+            sp = el.find(P + 'spPr')
+            sp.append(etree.fromstring('<a:solidFill xmlns:a="%s"><a:srgbClr val="FFEEAA"/></a:solidFill>' % A[1:-1]))
+            el.find(P + 'txBody/' + A + 'bodyPr').set('anchor', 'b')
+            p = el.find(P + 'txBody/' + A + 'p')
+            p.insert(0, etree.fromstring('<a:pPr xmlns:a="%s" algn="r"/>' % A[1:-1]))
+            for r in p.findall(A + 'r'):
+                rpr = r.find(A + 'rPr')
+                if rpr is None:
+                    rpr = etree.Element(A + 'rPr')
+                    r.insert(0, rpr)
+                rpr.set('sz', '3200')
+                rpr.insert(0, etree.fromstring('<a:solidFill xmlns:a="%s"><a:srgbClr val="C00000"/></a:solidFill>' % A[1:-1]))
+            break
+        cs = root.find(P + 'cSld')
+        cs.insert(0, etree.fromstring('<p:bg xmlns:p="%s" xmlns:a="%s"><p:bgPr><a:solidFill><a:srgbClr val="F2F2F2"/></a:solidFill>'
+                                      '<a:effectLst/></p:bgPr></p:bg>' % (P[1:-1], A[1:-1])))
+        tree = sp_tree(root)
+        tree.append(etree.fromstring(
+            '<p:sp xmlns:p="%s" xmlns:a="%s"><p:nvSpPr><p:cNvPr id="900" name="Rule"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+            '<p:spPr><a:xfrm><a:off x="500000" y="900000"/><a:ext cx="2000000" cy="40000"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="0070C0"/></a:solidFill></p:spPr></p:sp>'
+            % (P[1:-1], A[1:-1])))
+        tree.append(etree.fromstring(
+            '<p:sp xmlns:p="%s" xmlns:a="%s"><p:nvSpPr><p:cNvPr id="901" name="Callout"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
+            '<p:spPr><a:xfrm><a:off x="600000" y="1500000"/><a:ext cx="2000000" cy="400000"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr>'
+            '<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/><a:t>NEW!</a:t></a:r></a:p></p:txBody></p:sp>'
+            % (P[1:-1], A[1:-1])))
 
-    key_moved = []
-    mutate(truth, tp, lambda p: key_moved.append(move_on_truth(p)))
-    check('truth fixture: a placeholder was moved on a truth slide', key_moved and key_moved[0], key_moved)
-    step2 = os.path.join(D, 'step2.pptx')
-    out2 = os.path.join(work, 'positions.pptx')
-    rc, out = script('apply_truth_positions.py', step2, tp, os.path.join(w1, 'truth_spec.json'), out2)
-    check('apply_truth_positions runs', rc == 0, out)
-    pm = load_json(step2 + '.meta.json')['layout_for_slide']
-    pk = Package(open(out2, 'rb').read())
-    hits = [n for n, k in pm.items() if k == ts0['layout']]
-    ok = bool(hits)
+    mutate(truth, tp, design_truth)
+    check('truth fixture: hand-made design on a truth slide', 'key' in info, info)
+    step3 = os.path.join(D, 'step3.pptx')
+    out3 = os.path.join(work, 'design.pptx')
+    rc, out = script('apply_truth_slide_design.py', step3, tp, os.path.join(w1, 'truth_spec.json'), out3)
+    check('apply_truth_slide_design runs', rc == 0, out)
+    dm = load_json(out3 + '.meta.json')
+    pk = Package(open(out3, 'rb').read())
+    hits = [int(n) for n, k in load_json(step3 + '.meta.json')['layout_for_slide'].items() if k == ts0['layout']]
+    check('some target uses that layout', bool(hits), hits)
+    allfine, other_ok = True, True
     for n in hits:
-        got = [read_xfrm(el) for el in shapes(pk, int(n)) if ph_of(el) and (ph_of(el)[0], ph_of(el)[1]) == key_moved[0]]
-        ok = ok and got == [moved]
-    check('targets on that layout follow the moved placeholder', ok, hits)
-    other = [n for n, k in pm.items() if k != ts0['layout']]
-    check('targets on other layouts are untouched',
-          all(read_xfrm(el) is None for n in other for el in shapes(pk, int(n))
-              if ph_of(el) and ph_of(el)[0] not in ('ftr', 'sldNum', 'dt', 'hdr')), other)
+        el = next(e for e in shapes(pk, n) if ph_of(e) and (ph_of(e)[0], ph_of(e)[1]) == info['key'])
+        allfine = allfine and read_xfrm(el) == moved
+        allfine = allfine and el.find(P + 'spPr/' + A + 'solidFill/' + A + 'srgbClr').get('val') == 'FFEEAA'
+        allfine = allfine and el.find(P + 'txBody/' + A + 'bodyPr').get('anchor') == 'b'
+        p0 = el.find(P + 'txBody/' + A + 'p')
+        allfine = allfine and p0.find(A + 'pPr').get('algn') == 'r'
+        r0 = p0.find(A + 'r/' + A + 'rPr')
+        allfine = allfine and r0.get('sz') == '3200'
+        allfine = allfine and r0.find(A + 'solidFill/' + A + 'srgbClr').get('val') == 'C00000'
+        root = pk.xml(pk.slide_parts()[n - 1])
+        allfine = allfine and root.find(P + 'cSld/' + P + 'bg') is not None
+        names = [shape_name(e) for e in shapes(pk, n)]
+        allfine = allfine and 'dglppt-design Rule' in names and 'dglppt-design Callout' not in names
+    check('position, fill, anchor, alignment, size, color, background and decorative shape copied', allfine, hits)
+    check('a one-off shape with text is asked about, not copied',
+          any('Callout' in q for q in dm['design']['questions']), dm['design']['questions'])
+    for n, k in load_json(step3 + '.meta.json')['layout_for_slide'].items():
+        if k != ts0['layout']:
+            other_ok = other_ok and not any(x['slide'] == int(n) and 'Rule' in x.get('name', '') for x in dm['design']['added'])
+    check('slides on other layouts are untouched', other_ok)
+    apd = os.path.join(work, 'approved_callout.json')
+    json.dump({'add': [{'layout': ts0['layout'], 'shape_name': 'Callout'}]}, open(apd, 'w'))
+    out3b = os.path.join(work, 'design_b.pptx')
+    rc, out = script('apply_truth_slide_design.py', step3, tp, os.path.join(w1, 'truth_spec.json'), out3b, '--approved', apd)
+    pkb = Package(open(out3b, 'rb').read())
+    check('an approved text one-off is copied', rc == 0 and any(
+        shape_name(e) == 'dglppt-design Callout' for n in hits for e in shapes(pkb, n)), out)
+
+    # best-matching truth slide wins
+    import apply_truth_slide_design as atd
+    one = {('title', '0'): 'Quarterly results'}
+    two = {('title', '0'): 'Quarterly results', ('body', '1'): 'x' * 400}
+    check('donor score prefers the same placeholders', atd.score(two, two) > atd.score(one, two))
+    check('donor score prefers a similar amount of text',
+          atd.score({('body', '1'): 'x' * 380}, {('body', '1'): 'x' * 400}) >
+          atd.score({('body', '1'): 'x'}, {('body', '1'): 'x' * 400}))
+
+    # a copied change that pushes text out of its box is never shrunk silently: it asks
+    def huge(p):
+        for n in hits:
+            el = next(e for e in shapes(p, n) if ph_of(e) and (ph_of(e)[0], ph_of(e)[1]) == info['key'])
+            for r in el.iter(A + 'r'):
+                r.find(A + 'rPr').set('sz', '9000')
+    mutate(out3, os.path.join(work, 'design_huge.pptx'), huge)
+    rc, out = script('fit_text.py', os.path.join(work, 'design_huge.pptx'), os.path.join(work, 'fit_out.pptx'),
+                     '--report', os.path.join(work, 'fit_huge.json'))
+    fr = load_json(os.path.join(work, 'fit_huge.json'))
+    check('overflow from a copied design asks first, never shrinks', any(
+        x.get('reason') == 'truth-slide design' for x in fr['needs_decision']) and not any(
+        s['slide'] in hits and s['name'] == next(d['name'] for d in dm['design']['shapes'] if d['slide'] == s['slide'])
+        for s in fr['shrinks']), fr['needs_decision'])
 
     failed = [n for n, ok in RESULTS if not ok]
     print(f'\n{len(RESULTS) - len(failed)}/{len(RESULTS)} passed')
