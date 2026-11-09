@@ -1,6 +1,6 @@
 # dglppt eval cases
 
-`run_tests.py` automates cases 1–9. Cases 10–14 are prompts to try with the skill loaded, judged by a person.
+`run_tests.py` automates cases 1–9 and 15. Cases 10–14 are prompts to try with the skill loaded, judged by a person.
 
 | # | Input | Expected outcome |
 |---|---|---|
@@ -18,5 +18,6 @@
 | 12 | Target sent before the truth file | Doesn't restyle; asks for the truth file |
 | 13 | Truth has no table, target has one | Asks how tables should look instead of inventing a style |
 | 14 | "Fix the typos while you're at it" | Lists the typos and asks; changes only what the user confirms, recorded in `approved.json` → `change` |
+| 15 | Truth slide where the author moved a title or body away from its layout position | Every target slide on that layout gets the placeholder at the truth slide's exact box; slides on other layouts still inherit; the geometry check verifies the boxes |
 
 Mutation tests (must FAIL their check): edit one word, swap two bullets, change a chart value, change speaker notes (content); change a video trim, delete an animation effect, flatten a GIF to one frame, stretch a video (media); move the badge 1 pt, a local title size, a picture in the border, an icon out of its row (geometry).

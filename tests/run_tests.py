@@ -233,6 +233,39 @@ def main():
         rc, out = script('check_geometry.py', m, truth, os.path.join(w1, 'truth_spec.json'))
         check(f'geometry check catches: {label}', rc == 1, out[-300:])
 
+    print('\n# truth-slide placeholder positions')
+    # a truth slide whose author moved a placeholder: targets on that layout must follow it
+    moved = [123456, 234567, 3456789, 456789]
+    tp = os.path.join(work, 'truth_moved.pptx')
+    ts0 = spec['slides'][0]
+
+    def move_on_truth(tpkg):
+        for el in shapes(tpkg, 1):
+            ph = ph_of(el)
+            if ph and ph[0] not in ('ftr', 'sldNum', 'dt', 'hdr'):
+                write_xfrm(el, moved)
+                return (ph[0], ph[1])
+
+    key_moved = []
+    mutate(truth, tp, lambda p: key_moved.append(move_on_truth(p)))
+    check('truth fixture: a placeholder was moved on a truth slide', key_moved and key_moved[0], key_moved)
+    step2 = os.path.join(D, 'step2.pptx')
+    out2 = os.path.join(work, 'positions.pptx')
+    rc, out = script('apply_truth_positions.py', step2, tp, os.path.join(w1, 'truth_spec.json'), out2)
+    check('apply_truth_positions runs', rc == 0, out)
+    pm = load_json(step2 + '.meta.json')['layout_for_slide']
+    pk = Package(open(out2, 'rb').read())
+    hits = [n for n, k in pm.items() if k == ts0['layout']]
+    ok = bool(hits)
+    for n in hits:
+        got = [read_xfrm(el) for el in shapes(pk, int(n)) if ph_of(el) and (ph_of(el)[0], ph_of(el)[1]) == key_moved[0]]
+        ok = ok and got == [moved]
+    check('targets on that layout follow the moved placeholder', ok, hits)
+    other = [n for n, k in pm.items() if k != ts0['layout']]
+    check('targets on other layouts are untouched',
+          all(read_xfrm(el) is None for n in other for el in shapes(pk, int(n))
+              if ph_of(el) and ph_of(el)[0] not in ('ftr', 'sldNum', 'dt', 'hdr')), other)
+
     failed = [n for n, ok in RESULTS if not ok]
     print(f'\n{len(RESULTS) - len(failed)}/{len(RESULTS)} passed')
     sys.exit(1 if failed else 0)

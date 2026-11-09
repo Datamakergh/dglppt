@@ -8,7 +8,8 @@
 
 Steps (each one is also a script you can run alone):
   extract_truth (if no --spec) -> fingerprint (before) -> map_layouts (if no --map)
-  -> transplant_design -> remap_placeholders -> strip_overrides -> place
+  -> transplant_design -> remap_placeholders -> apply_truth_positions
+  -> strip_overrides -> place
   -> visual_groups (confirmed --groups, else only high-confidence proposals)
   -> fit_text -> validate (pptx skill) -> fingerprint + compare (content lock)
   -> check_geometry -> check_media -> render + band_diff -> before_after -> report.md
@@ -87,7 +88,9 @@ def main():
     run('transplant_design.py', [a.truth, original, lmap, s1, '--spec', spec], log)
     remap = [s1, a.truth, spec, s2] + (['--approved', a.approved] if a.approved else [])
     run('remap_placeholders.py', remap, log)
-    run('strip_overrides.py', [s2, spec, s3] + (['--roles', a.roles] if a.roles else []), log)
+    s2b = j('step2b.pptx')
+    run('apply_truth_positions.py', [s2, a.truth, spec, s2b], log)
+    run('strip_overrides.py', [s2b, spec, s3] + (['--roles', a.roles] if a.roles else []), log)
     run('place.py', [s3, spec, s4] + (['--plan', a.plan] if a.plan else []), log)
     groups = a.groups
     if not groups:

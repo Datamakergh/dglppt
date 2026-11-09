@@ -75,6 +75,7 @@ def main():
     ow, oh = meta.get('original_size', [W, H])
     max_scale = a.max_scale or max(1.0, W / ow, H / oh)
     fixed_ids = {(x['slide'], x['shape_id']) for x in meta.get('remap', {}).get('added_fixed', [])}
+    positioned = {(x['slide'], x['shape_id']) for x in meta.get('positions', {}).get('copied', [])}
     report = dict(slides=[], needs_approval=[], overlaps=[])
 
     fixed_boxes = [fe['box'] for fe in spec['fixed_elements'] if fe.get('box') and fe['source'] != 'slide'
@@ -93,6 +94,10 @@ def main():
             if (n, sid) in fixed_ids:
                 continue
             ph = ph_of(el)
+            if ph and (n, sid) in positioned:  # sits where the truth slide put it
+                if ph[0] not in FIXED_PH_TYPES:
+                    used_ph.append((ph, read_xfrm(el)))
+                continue
             if ph and read_xfrm(el) is None:  # matched: inherits truth geometry
                 if ph[0] not in FIXED_PH_TYPES:
                     used_ph.append((ph, inherited_box(pkg, part, el)))

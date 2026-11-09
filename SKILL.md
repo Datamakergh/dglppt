@@ -17,7 +17,7 @@ All the mechanical work is done by the scripts in `scripts/` (python-pptx, lxml,
    - **animations and transitions**, and the shapes they point at.
 
    Media and animated content may change in **placement only**: position and size, with the aspect ratio kept. They also take the truth file's frame styling (border, shadow, corners) when the truth defines one. If restyling seems to need a content change (splitting a slide, dropping an old footer line, removing a duplicate logo), **stop and ask**. One approval covers one change only. Record every approval in `approved.json` (format below).
-2. **The truth file wins on every design decision.** Positions, sizes, margins, gaps, fonts, sizes, colors, line spacing, bullets, insets, fills, borders, header, footer, slide number and logo all come from the truth file. When the truth file doesn't define something the target needs (no table in the truth, for example), ask rather than invent.
+2. **The truth file wins on every design decision.** That includes where the truth *slides* put things, not only what its layouts say: a placeholder the author moved on a truth slide is placed there on every target slide with the same layout. Positions, sizes, margins, gaps, fonts, sizes, colors, line spacing, bullets, insets, fills, borders, header, footer, slide number and logo all come from the truth file. When the truth file doesn't define something the target needs (no table in the truth, for example), ask rather than invent.
 
 ## Session flow
 
@@ -104,7 +104,8 @@ The restyle happens inside the target's package, so its slides, media, charts an
 ```
 python $S/transplant_design.py truth.pptx target.pptx layout_map.json s1.pptx --spec truth_spec.json
 python $S/remap_placeholders.py s1.pptx truth.pptx truth_spec.json s2.pptx --approved approved.json
-python $S/strip_overrides.py   s2.pptx truth_spec.json s3.pptx [--roles roles.json]
+python $S/apply_truth_positions.py s2.pptx truth.pptx truth_spec.json s2b.pptx
+python $S/strip_overrides.py   s2b.pptx truth_spec.json s3.pptx [--roles roles.json]
 python $S/place.py             s3.pptx truth_spec.json s4.pptx [--plan plan.json]
 python $S/visual_groups.py detect s4.pptx groups.json --sheets group_sheets   # review, edit, confirm
 python $S/visual_groups.py apply  s4.pptx truth_spec.json groups.json s5.pptx
@@ -128,6 +129,7 @@ What each step guarantees:
   - Rows share one top edge and use equal gaps, spread over the row's span. Add `"gap": "truth"` to a group to use the truth gap.
   - Captions keep one shared line and stay centered under their own visual.
   - A visual repeated across slides gets the first occurrence's box, and its spot too unless that would overlap other content there (then the size matches, and it's reported).
+- **4b-bis. apply_truth_positions:** a truth deck is often designed *on its slides*: the author dragged a title or body to a new spot, and that is part of the design, not an accident. `remap_placeholders` clears every placeholder's local geometry, so without this step the target follows the bare layout and looks different from the truth slides. For each target slide mapped to layout L, the first truth slide using L donates the box of every placeholder that has its own geometry, matched by type + idx. Placeholders the truth slide leaves to its layout stay inherited, and footer, date and slide-number placeholders always inherit. `place.py` then leaves these placeholders where they are, and `check_geometry` verifies the boxes exactly. Use `--skip-layouts KEY` only if the user says a layout should follow the bare layout instead.
 - **4d. strip_overrides:**
   - **Removed:** local fonts, sizes, colors, spacing, alignment, indents, bullet styling, shape list styles and stale autofit scales. Free text boxes get the truth role style written into their own list style, and keep their alignment.
   - **Kept:** bold, italic, underline, strike, super/subscript, highlight, links, list type (bullet / number / none) and paragraph level. **Semantic color** (a red "12%" inside black text) is kept and reported. Drop it only with `--drop-semantic-color` and the user's yes.
@@ -151,12 +153,13 @@ python $S/band_diff.py truth_spec.json restyled.pptx renders/truth renders/after
 - **5a-bis. Media and animation integrity (`check_media`):** same GIF, video and audio bytes, poster frames, trim and playback settings, GIF frames; same animation timeline and transitions; every animation target still exists and is the same shape; aspect ratios kept; no unapproved shrink below 85%.
 - **5b. Geometry and style (`check_geometry`, exact, in EMU):**
   - layout XML identical to the truth;
+  - placeholders sit where the truth slide put them (or inherit the layout when the truth slide did not move them);
   - fixed elements at 0 EMU difference, and every footer, slide number and date the truth shows is present and inherited;
   - matched placeholders inherit the truth geometry;
   - no free content in the borders or over a fixed element;
   - every run's *effective* font, size and color, and every paragraph's spacing and alignment, equal what the truth gives it, apart from emphasis, kept semantic colors and listed shrinks;
   - visual groups have identical slots, a shared edge and equal gaps.
-- **5c. Visual:**
+- **5c. Visual:** a passing script check proves the file matches the layouts and the copied boxes, not that it looks like the truth slides. Always put the truth renders and the restyled renders side by side (same layout, same slide type) and compare placements by eye before delivering. When a truth slide looks odd (a title far to the right, a caption at the bottom), check the slide XML: it is usually a deliberate slide-level move, not a layout property, so do not describe it to the user as a layout.
   - `band_diff` compares the fixed-element regions pixel by pixel against a truth slide of the same layout, with slide numbers and dates masked. A failure usually means text running into the footer, or furniture that moved.
   - Then look yourself, with fresh eyes. For long decks, start with the contact sheets (`before_after.py … --sheets`) and open full renders only for flagged slides. Look for overflow, clipping, overlap, words broken across lines, and the same empty borders, alignment lines and rhythm of gaps as the truth.
   - Renders show only a video's poster frame and a GIF's first frame, so the visual check for media covers placement only. `check_media` covers the rest.
